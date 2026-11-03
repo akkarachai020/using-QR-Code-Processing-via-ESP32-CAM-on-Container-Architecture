@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-CAM QR Dashboard (Node.js)</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #fff; padding: 20px; margin: 0; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .nav { margin-bottom: 20px; text-align: center; }
+        .nav a { color: #38bdf8; text-decoration: none; margin: 0 15px; font-weight: bold; }
+        .nav a:hover { text-decoration: underline; }
+        .grid { display: grid; grid-template-columns: 1fr 1.2fr; gap: 20px; }
+        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+        .card { background: #1e293b; padding: 20px; border-radius: 12px; border: 1px solid #334155; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        .img-box { width: 100%; background: #000; min-height: 250px; display: flex; align-items: center; justify-content: center; border-radius: 8px; overflow: hidden; border: 1px solid #334155; }
+        img { width: 100%; height: auto; display: block; object-fit: contain; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 10px; border-bottom: 1px solid #334155; text-align: left; font-size: 14px; }
+        th { background: #334155; color: #38bdf8; }
+        .qr-val { color: #22c55e; font-weight: bold; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav">
+            <a href="/">📷 สแกนสด Dashboard</a> | 
+            <a href="/attendance">📋 หน้าแสดงการลงเวลา (Database)</a> | 
+            <a href="http://localhost:8080" target="_blank">🗄️ phpMyAdmin</a>
+        </div>
+        <h1 style="text-align:center; color:#38bdf8;">📷 ESP32-CAM QR Reader Dashboard</h1>
+        <div class="grid">
+            <div class="card">
+                <h3>🖼️ ภาพล่าสุดที่ส่งมาจาก ESP32</h3>
+                <div class="img-box"><img id="latestImg" src="/latest.jpg" alt="รอรูป..."></div>
+            </div>
+            <div class="card">
+                <h3>⚡ สแกนล่าสุดเรียลไทม์</h3>
+                <table>
+                    <thead><tr><th>เวลา</th><th>รหัส QR Code</th></tr></thead>
+                    <tbody id="historyBody"><tr><td colspan="2">กำลังรอข้อมูล...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <script>
+        async function updateData() {
+            try {
+                document.getElementById('latestImg').src = '/latest.jpg?t=' + Date.now();
+                const res = await fetch('/api/recent');
+                const data = await res.json();
+                let html = '';
+                data.forEach(item => {
+                    html += `<tr><td>${item.scan_time}</td><td class="qr-val">${item.student_id}</td></tr>`;
+                });
+                if(data.length > 0) document.getElementById('historyBody').innerHTML = html;
+            } catch(e){}
+        }
+        setInterval(updateData, 1500);
+    </script>
+</body>
+</html> 
