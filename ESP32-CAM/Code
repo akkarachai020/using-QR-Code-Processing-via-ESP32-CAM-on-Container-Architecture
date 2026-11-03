@@ -1,0 +1,337 @@
+#include "esp_camera.h"
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include <ArduinoJson.h>
+#include "FS.h"
+#include "LittleFS.h"
+
+// ==================== 1. ตั้งค่า Wi-Fi และ IP เซิร์ฟเวอร์ ====================
+const char* ssid          = "BBMM";
+const char* password      = "0639467861";
+
+const char* serverUrl     = "http://10.181.105.99:5000/upload"; 
+const char* serverTimeUrl = "http://10.181.105.99:5000/time"; 
+const char* serverSyncUrl = "http://10.181.105.99:5000/api/sync-offline";
+
+// 🔔 ตั้งค่า Telegram Bot
+const String telegramBotToken = "8667010218:AAH57aFmVarVJEiQn59rsrVZx02F7wHcnsw"; // Token ของ Telegram Bot
+const String telegramChatId   = "8141791229";                           // Chat ID
+
+// ==================== 2. ตั้งค่าขา Buzzer และ DS3231 RTC ====================
+#define BUZZER_PIN 13     // ขา GPIO 13 สำหรับต่อ Buzzer
+#define I2C_SDA    14      
+#define I2C_SCL    15      
+
+const bool IS_ACTIVE_BUZZER = true; 
+RTC_DS3231 rtc;
+
+// ==================== 3. ตั้งค่า ขาบอร์ด AI-THINKER ESP32-CAM ====================
+#define PWDN_GPIO_NUM     32
+#define RESET_GPIO_NUM    -1
+#define XCLK_GPIO_NUM      0
+#define SIOD_GPIO_NUM     26
+#define SIOC_GPIO_NUM     27
+#define Y9_GPIO_NUM       35
+#define Y8_GPIO_NUM       34
+#define Y7_GPIO_NUM       39
+#define Y6_GPIO_NUM       36
+#define Y5_GPIO_NUM       21
+#define Y4_GPIO_NUM       19
+#define Y3_GPIO_NUM       18
+#define Y2_GPIO_NUM        5
+#define VSYNC_GPIO_NUM    25
+#define HREF_GPIO_NUM     23
+#define PCLK_GPIO_NUM     22
+
+// ==================== 4. ฟังก์ชัน Buzzer และ Telegram ====================
+void triggerBuzzerSuccess() {
+  if (IS_ACTIVE_BUZZER) {
+    digitalWrite(BUZZER_PIN, HIGH); delay(100);
+    digitalWrite(BUZZER_PIN, LOW);  delay(100);
+    digitalWrite(BUZZER_PIN, HIGH); delay(100);
+    digitalWrite(BUZZER_PIN, LOW);
+  } else {
+    tone(BUZZER_PIN, 2000, 100); delay(150);
+    tone(BUZZER_PIN, 2000, 100);
+  }
+}
+
+// ฟังก์ชันส่งการแจ้งเตือนผ่าน Telegram
+void sendTelegramMessage(String message) {
+  if (WiFi.status() == WL_CONNECTED && telegramBotToken.length() > 0) {
+    HTTPClient http;
+    String url = "https://api.telegram.org/bot" + telegramBotToken + "/sendMessage?chat_id=" + telegramChatId + "&text=" + message;
+    http.begin(url);
+    int httpCode = http.GET();
+    http.end();
+  }
+}
+
+// ==================== 5. ฟังก์ชันจัดการการบันทึก Offline (LittleFS) ====================
+void saveOfflineLog(String studentId, String firstName, String lastName, String timestampStr) {
+  File file = LittleFS.open("/offline_logs.txt", FILE_APPEND);
+  if (file) {
+    file.printf("%s|%s|%s|%s\n", studentId.c_str(), firstName.c_str(), lastName.c_str(), timestampStr.c_str());
+    file.close();
+    Serial.println("💾 [Offline Mode] บันทึกเวลาลง Flash Memory สำเร็จ!");
+  } else {
+    Serial.println("❌ ไม่สามารถเปิดไฟล์บันทึก Offline ได้");
+  }
+}
+
+void syncOfflineData() {
+  if (WiFi.status() == WL_CONNECTED && LittleFS.exists("/offline_logs.txt")) {
+    File file = LittleFS.open("/offline_logs.txt", FILE_READ);
+    if (file) {
+      Serial.println("🔄 ตรวจพบข้อมูลค้างในคิว กำลังซิงค์ข้อมูล Offline ไปยัง Server และ Telegram...");
+      while (file.available()) {
+        String line = file.readStringUntil('\n');
+        line.trim();
+        if (line.length() > 0) {
+          // แยกค่าด้วยตัวแบ่ง |
+          int idx1 = line.indexOf('|');
+          int idx2 = line.indexOf('|', idx1 + 1);
+          int idx3 = line.indexOf('|', idx2 + 1);
+
+          if (idx1 != -1 && idx2 != -1 && idx3 != -1) {
+            String studentId = line.substring(0, idx1);
+            String firstName = line.substring(idx1 + 1, idx2);
+            String lastName  = line.substring(idx2 + 1, idx3);
+            String timeStr   = line.substring(idx3 + 1);
+
+            // 1. ส่งเข้า Server MySQL via API
+            HTTPClient http;
+            http.begin(serverSyncUrl);
+            http.addHeader("Content-Type", "application/json");
+            
+            StaticJsonDocument<200> doc;
+            doc["student_id"] = studentId;
+            doc["scan_time"]  = timeStr;
+            String jsonPayload;
+            serializeJson(doc, jsonPayload);
+
+            int httpCode = http.POST(jsonPayload);
+            http.end();
+
+            // 2. ส่งเข้า Telegram
+            String msg = "🔄 [Sync Offline] สแกนย้อนหลัง\n";
+            msg += "🆔 รหัส: " + studentId + "\n";
+            msg += "👤 ชื่อ: " + firstName + " " + lastName + "\n";
+            msg += "📅 เวลา: " + timeStr;
+            sendTelegramMessage(msg);
+          }
+        }
+      }
+      file.close();
+      LittleFS.remove("/offline_logs.txt"); // ลบไฟล์คิวเมื่อซิงค์เสร็จสิ้น
+      Serial.println("✅ ซิงค์ข้อมูล Offline ทั้งหมดสำเร็จ!");
+    }
+  }
+}
+
+// ==================== 6. ฟังก์ชันซิงค์เวลากับ Server ====================
+void syncTimeWithServer() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  http.begin(serverTimeUrl);
+  int httpCode = http.GET();
+
+  if (httpCode == 200) {
+    String payload = http.getString();
+    
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, payload);
+
+    if (!error) {
+      long serverTimestamp = doc["timestamp"];
+      DateTime rtcNow = rtc.now();
+      long rtcTimestamp = rtcNow.unixtime();
+
+      if (abs(serverTimestamp - rtcTimestamp) > 5) {
+        Serial.println("⚠️ เวลา RTC ไม่ตรงกับ Server! กำลังปรับเวลาใหม่...");
+        
+        int year   = doc["year"];
+        int month  = doc["month"];
+        int day    = doc["day"];
+        int hour   = doc["hour"];
+        int minute = doc["minute"];
+        int second = doc["second"];
+
+        rtc.adjust(DateTime(year, month, day, hour, minute, second));
+        Serial.printf("✅ อัปเดตเวลา RTC สำเร็จเป็น: %04d-%02d-%02d %02d:%02d:%02d\n", 
+                      year, month, day, hour, minute, second);
+      } else {
+        Serial.println("✅ เวลา RTC ตรงกับ Server แล้ว");
+      }
+    }
+  } else {
+    Serial.printf("❌ ไม่สามารถดึงเวลาจาก Server ได้ (Error Code: %d)\n", httpCode);
+  }
+  http.end();
+}
+
+// ==================== 7. SETUP ====================
+void setup() {
+  Serial.begin(115200);
+  Serial.println("\n--- เริ่มต้น ESP32-CAM QR Scanner + RTC + Offline Mode + Telegram ---");
+
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  // เริ่มต้นระบบไฟล์ Flash Memory สำหรับ Offline Storage
+  if (!LittleFS.begin(true)) {
+    Serial.println("❌ ไม่สามารถเริ่มต้น LittleFS ได้");
+  } else {
+    Serial.println("✅ ระบบ Flash Memory (LittleFS) พร้อมใช้งาน");
+  }
+
+  // เริ่มต้น RTC DS3231
+  Wire.begin(I2C_SDA, I2C_SCL);
+  if (!rtc.begin()) {
+    Serial.println("❌ ไม่พบโมดูล DS3231 RTC! ตรวจสอบการต่อสาย I2C");
+  } else {
+    Serial.println("✅ เชื่อมต่อ DS3231 RTC สำเร็จ");
+  }
+
+  // ตั้งค่ากล้อง ESP32-CAM
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = FRAMESIZE_QVGA;
+  config.jpeg_quality = 12;
+  config.fb_count = 1;
+
+  esp_err_t err = esp_camera_init(&config);
+  if (err != ESP_OK) {
+    Serial.printf("❌ ตั้งค่ากล้องล้มเหลว Error: 0x%x\n", err);
+    return;
+  }
+  Serial.println("✅ ตั้งค่ากล้องสำเร็จ");
+
+  // เชื่อมต่อ Wi-Fi
+  WiFi.begin(ssid, password);
+  Serial.print("กำลังเชื่อมต่อ Wi-Fi");
+  int wifiRetry = 0;
+  while (WiFi.status() != WL_CONNECTED && wifiRetry < 10) {
+    delay(500);
+    Serial.print(".");
+    wifiRetry++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\n✅ Wi-Fi เชื่อมต่อสำเร็จ!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+
+    syncTimeWithServer();
+    syncOfflineData(); // ซิงค์ข้อมูลที่ค้างไว้ช่วง Offline ทันทีที่เน็ตติด
+  } else {
+    Serial.println("\n⚠️ ไม่สามารถเชื่อมต่อ Wi-Fi ได้ เข้าสู่โหมด Offline");
+  }
+}
+
+// ==================== 8. LOOP ====================
+void loop() {
+  // ดึงเวลาปัจจุบันจากโมดูล DS3231 RTC เสมอ
+  DateTime now = rtc.now();
+  char timeBuffer[25];
+  snprintf(timeBuffer, sizeof(timeBuffer), "%04d-%02d-%02d %02d:%02d:%02d",
+           now.year(), now.month(), now.day(),
+           now.hour(), now.minute(), now.second());
+  String timestampStr = String(timeBuffer);
+
+  // ถ่ายรูป
+  camera_fb_t * fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("❌ ถ่ายภาพล้มเหลว");
+    delay(1000);
+    return;
+  }
+
+  // หากอยู่ในสถานะเชื่อมต่อ Wi-Fi
+  if (WiFi.status() == WL_CONNECTED) {
+    // ซิงค์ข้อมูลค้างเดิมก่อน (ถ้ามี)
+    syncOfflineData();
+
+    HTTPClient http;
+    http.begin(serverUrl);
+    http.addHeader("Content-Type", "image/jpeg");
+    http.addHeader("X-Timestamp", timestampStr);
+
+    int httpResponseCode = http.POST(fb->buf, fb->len);
+
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      Serial.printf("📸 [%s] ส่งรูปสำเร็จ (Code: %d) -> ตอบกลับ: %s\n", 
+                    timestampStr.c_str(), httpResponseCode, response.c_str());
+
+      if (httpResponseCode == 200 && (response.indexOf("\"qr_found\":true") != -1 || response.indexOf("\"qr_found\": true") != -1)) {
+        Serial.println("🔔 ตรวจพบ QR Code สำเร็จ! ส่งสัญญาณเสียง Buzzer");
+        triggerBuzzerSuccess();
+        
+        // 📲 อ่านค่า JSON Response เพื่อนำข้อมูลไปส่ง Telegram
+        StaticJsonDocument<512> doc;
+        DeserializationError error = deserializeJson(doc, response);
+        
+        String studentId = "";
+        String firstName = "";
+        String lastName  = "";
+
+        if (!error) {
+          if (doc.containsKey("student_id") && !doc["student_id"].isNull()) {
+            studentId = doc["student_id"].as<String>();
+          }
+          if (doc.containsKey("first_name") && !doc["first_name"].isNull()) {
+            firstName = doc["first_name"].as<String>();
+          }
+          if (doc.containsKey("last_name") && !doc["last_name"].isNull()) {
+            lastName = doc["last_name"].as<String>();
+          }
+        }
+
+        // 📲 จัดรูปแบบข้อความแจ้งเตือน Telegram
+        String msg = "✅ [ลงเวลาเข้าร่วมกิจกรรมสำเร็จ]\n";
+        msg += "🆔 รหัสนักศึกษา: " + (studentId.length() > 0 ? studentId : "ไม่ระบุ") + "\n";
+        msg += "👤 ชื่อ-นามสกุล: " + firstName + " " + lastName + "\n";
+        msg += "📅 วันที่และเวลา: " + timestampStr;
+
+        sendTelegramMessage(msg);
+
+      } else if (httpResponseCode == 200) {
+        Serial.println("ℹ️ ไม่พบ QR Code ในภาพ");
+      }
+    } else {
+      Serial.printf("❌ ส่งรูปไม่ผ่าน Error: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+
+    http.end();
+  } else {
+    // ⚠️ สภาวะไม่มีสัญญาณ (Offline Mode)
+    Serial.println("⚠️ สัญญาณ Wi-Fi ขาดหาย พยายามเชื่อมต่อใหม่...");
+    WiFi.reconnect();
+  }
+
+  esp_camera_fb_return(fb);
+  delay(2000);
+}
