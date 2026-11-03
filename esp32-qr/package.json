@@ -1,0 +1,19 @@
+
+{
+  "name": "esp32-qr-attendance",
+  "version": "1.0.0",
+  "description": "ESP32-CAM QR Code Attendance System",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "jpeg-js": "^0.4.4",
+    "jsqr": "^1.4.0",
+    "mysql2": "^3.6.5"
+  }
+}
