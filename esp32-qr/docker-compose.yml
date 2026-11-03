@@ -1,0 +1,49 @@
+
+services:
+  app:
+    build: .
+    container_name: esp32_qr_app
+    ports:
+      - "5000:5000"
+    environment:
+      - TZ=Asia/Bangkok
+      - DB_HOST=db
+      - DB_USER=root
+      - DB_PASS=rootpassword
+      - DB_NAME=attendance_db
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TELEGRAM_TEST_KEY=${TELEGRAM_TEST_KEY}
+    depends_on:
+      - db
+    restart: always
+
+  db:
+    image: mysql:8.0
+    container_name: qr_mysql_db
+    environment:
+      TZ: Asia/Bangkok
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: attendance_db
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: always
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: qr_phpmyadmin
+    ports:
+      - "8080:80"
+    environment:
+      TZ: Asia/Bangkok
+      PMA_HOST: db
+      MYSQL_ROOT_PASSWORD: rootpassword
+    depends_on:
+      - db
+    restart: always
+
+volumes:
+  db_data:
